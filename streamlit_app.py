@@ -6,6 +6,7 @@ from pyathena import connect
 from pyathena.pandas.util import as_pandas
 
 
+
 aws_conf = st.secrets["aws"]
 conn = connect(
     aws_access_key_id     = aws_conf["aws_access_key_id"],
@@ -17,7 +18,10 @@ conn = connect(
 @st.cache_data(ttl=600)
 def run_athena_query(sql: str) -> pd.DataFrame:
     df = as_pandas(conn.execute(sql))
-    return df
+    if len(df.index) > 0:
+        return df
+    else:
+        st.error("Error while querying athena: Dataframe is empty, check query or source.")
 
 
 st.sidebar.title("Navigation")
@@ -60,12 +64,3 @@ elif page == "PREDICTIONS":
             "predicted_value": pd.np.random.rand(5),
         })
         st.line_chart(dummy.set_index("date"))
-
-
-elif page == "VERSION":
-    st.title("ℹ️ Version Info")
-    # you could load this from a file, env var, or hardcode
-    APP_VERSION = "0.1.0"
-    st.write(f"**App Version:** {APP_VERSION}")
-    st.write(f"**Streamlit Version:** {st.__version__}")
-    st.write(f"**AWS Region:** {aws_conf['region_name']}")
