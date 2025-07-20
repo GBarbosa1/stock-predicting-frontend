@@ -2,65 +2,75 @@
 
 import streamlit as st
 import pandas as pd
-from pyathena import connect
 from pyathena.pandas.util import as_pandas
+import boto3
+import time
+
+POLL_INTERVAL = 2
+
+def run_athena_query(athena, query: str, database: str, output_location: str) -> pd.DataFrame:
 
 
+    """
+    Execute an Athena query and return results as a pandas DataFrame.
+    """
+    
 
-aws_conf = st.secrets["aws"]
-conn = connect(
-    aws_access_key_id     = aws_conf["aws_access_key_id"],
-    aws_secret_access_key = aws_conf["aws_secret_access_key"],
-    s3_staging_dir        = aws_conf["s3_staging_dir"],
-    region_name           = aws_conf["region_name"],
+    # Start query
+    resp = athena.start_query_execution(
+        QueryString=query,
+        QueryExecutionContext={'Database': database},
+        ResultConfiguration={'OutputLocation': output_location}
+    )
+    qid = resp['QueryExecutionId']
+
+    while True:
+        status = athena.get_query_execution(QueryExecutionId=qid)
+        state = status['QueryExecution']['Status']['State']
+        if state in ('SUCCEEDED', 'FAILED', 'CANCELLED'):
+            break
+        time.sleep(POLL_INTERVAL)
+
+    if state != 'SUCCEEDED':
+        reason = status['QueryExecution']['Status'].get('StateChangeReason', 'Unknown')
+        raise RuntimeError(f"Athena query {state}: {reason}")
+
+    paginator = athena.get_paginator('get_query_results')
+    pages = paginator.paginate(QueryExecutionId=qid)
+
+    rows = []
+    for page in pages:
+        for row in page['ResultSet']['Rows']:
+            rows.append([col.get('VarCharValue') for col in row['Data']])
+
+    header = rows[0]
+    data = rows[1:]
+    return pd.DataFrame(data, columns=header)
+
+st.title("Portal de forecast v0.1")
+
+st.session_state["aws_key"] = st.secrets["aws_key"]
+st.session_state["aws_secret"] = st.secrets["aws_secret"]
+st.session_state["region"] = st.secrets["region"]
+st.session_state["database"] = st.secrets["database"]
+st.session_state["table"] = st.secrets["table"]
+st.session_state["athena_queries_output"] = st.secrets["athena_queries_output"]
+
+session = boto3.Session(
+    aws_access_key_id=st.session_state["aws_key"],
+    aws_secret_access_key=st.session_state["aws_secret"],
+    region_name=st.session_state["region"] 
 )
+athena = boto3.client('athena', region_name=st.session_state["region"])
+athena = session.client('athena')
+query = st.text_input("input here")
+st.write()
+if query:
+    df = run_athena_query(
+                athena,
+                query=query,
+                database=st.session_state["database"],
+                output_location=st.session_state["athena_queries_output"]
+            )
+    st.write(df)
 
-@st.cache_data(ttl=600)
-def run_athena_query(sql: str) -> pd.DataFrame:
-    df = as_pandas(conn.execute(sql))
-    if len(df.index) > 0:
-        return df
-    else:
-        st.error("Error while querying athena: Dataframe is empty, check query or source.")
-
-
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("", ["HOME", "PREDICTIONS", "VERSION"])
-
-
-if page == "HOME":
-    st.title("Welcome to My Athena-Backed Streamlit App")
-    st.write(
-        """
-        Use this lightweight dashboard to:
-        - Browse raw tables via Athena
-        - Generate on-the-fly predictions
-        - Track app version and metadata
-        """
-    )
-
-elif page == "PREDICTIONS":
-    st.title("🏷️ Predictions")
-    st.markdown("Enter a query to fetch your prediction inputs from Athena:")
-
-    # example: let user choose a table
-    table = st.selectbox(
-        "Select table",
-        options=["your_database.your_schema.your_table1", "your_database.your_schema.your_table2"],
-    )
-    limit = st.slider("Number of rows", 10, 1000, 100)
-
-    if st.button("Run Query"):
-        sql = f"SELECT * FROM {table} LIMIT {limit}"
-        df = run_athena_query(sql)
-        st.write(f"Returned {len(df)} rows")
-        st.dataframe(df)
-
-
-    st.markdown("#### Model output:")
-    if st.button("Generate Dummy Prediction"):
-        dummy = pd.DataFrame({
-            "date": pd.date_range(start=pd.Timestamp.today(), periods=5, freq="D"),
-            "predicted_value": pd.np.random.rand(5),
-        })
-        st.line_chart(dummy.set_index("date"))
