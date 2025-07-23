@@ -10,6 +10,24 @@ import plotly.express as px
 
 POLL_INTERVAL = 2
 
+def plot_graph(df:pd.DataFrame, x:str, y:str, title:str, labels:dict)
+    fig = px.line(
+        df,
+        x='date',              # ← use the new date column
+        y='price',
+        color='tag',           # one line per tag
+        line_dash='tag',       # optional: different dash per tag
+        title=title,
+        labels={'date': 'Date', 'close': 'Close Price', 'tag': 'Tag'}
+    )
+    
+    fig.update_layout(
+        xaxis=dict(rangeslider=dict(visible=True)),
+        yaxis_type="log",
+        margin=dict(l=40, r=40, t=40, b=40)
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
 def run_athena_query(athena, query: str, database: str, output_location: str) -> pd.DataFrame:
 
 
@@ -49,6 +67,31 @@ def run_athena_query(athena, query: str, database: str, output_location: str) ->
     data = rows[1:]
     return pd.DataFrame(data, columns=header)
 
+def orm_asset_query():
+    query = f"""
+    with max_date as (
+    select max(capture) as capture
+    from finance.s3gold_finance_data
+    where ticker = '{ticker}')
+    select
+        date_capture as "date",
+        close as price,
+        'real' as tag
+    from finance.s3silver_finance_data
+    where partition_0 = '{ticker}'
+    and cast(date_capture as date) between date_add('day',-120,current_date) and current_date
+    union
+    select distinct
+        date,
+        price_prediction as price,
+        'predicted' as tag
+    from {st.session_state["database"]+'.'+st.session_state["table"]}
+    where capture = (select capture from max_date)
+    and ticker = '{ticker}'
+    order by "date" asc
+    ;"""
+
+
 st.title("Portal de forecast v0.1")
 
 st.session_state["aws_key"] = st.secrets["aws_key"]
@@ -65,29 +108,7 @@ session = boto3.Session(
 )
 athena = boto3.client('athena', region_name=st.session_state["region"])
 athena = session.client('athena')
-query = """
-with max_date as (
-select max(capture) as capture
-from finance.s3gold_finance_data
-where ticker = 'ABEV3')
-select
-    date_capture as "date",
-    close as price,
-    'real' as tag
-from finance.s3silver_finance_data
-where partition_0 = 'ABEV3'
-and cast(date_capture as date) between date_add('day',-120,current_date) and current_date
-union
-select distinct
-    date,
-    price_prediction as price,
-    'predicted' as tag
-from finance.s3gold_finance_data
-where capture = (select capture from max_date)
-and ticker = 'ABEV3'
-order by "date" asc
-;
-"""
+
 df = run_athena_query(
                 athena,
                 query=query,
@@ -97,19 +118,13 @@ df = run_athena_query(
 
 df['date'] = pd.to_datetime(df['date'])
 
-fig = px.line(
-    df,
-    x='date',              # ← use the new date column
-    y='price',
-    color='tag',           # one line per tag
-    line_dash='tag',       # optional: different dash per tag
-    title='Close Price Over Time by Tag',
-    labels={'date': 'Date', 'close': 'Close Price', 'tag': 'Tag'}
-)
+st.title('Forecast de ativos')
 
-fig.update_layout(
-    xaxis=dict(rangeslider=dict(visible=True)),
-    yaxis_type="log",      # keep log scale if you like
-    margin=dict(l=40, r=40, t=40, b=40)
-)
-st.plotly_chart(fig, use_container_width=True)
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    
+with col2:
+
+with col3:
+
