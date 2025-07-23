@@ -10,7 +10,7 @@ import plotly.express as px
 
 POLL_INTERVAL = 2
 
-def plot_graph(df:pd.DataFrame, x:str, y:str, title:str, labels:dict)
+def plot_graph(df:pd.DataFrame, x:str, y:str, title:str):
     fig = px.line(
         df,
         x='date',              # ← use the new date column
@@ -67,17 +67,17 @@ def run_athena_query(athena, query: str, database: str, output_location: str) ->
     data = rows[1:]
     return pd.DataFrame(data, columns=header)
 
-def orm_asset_query():
+def orm_asset_query(ticker:str) -> str:
     query = f"""
     with max_date as (
     select max(capture) as capture
-    from finance.s3gold_finance_data
+    from {st.session_state["database"]+'.'+st.session_state["table"]}
     where ticker = '{ticker}')
     select
         date_capture as "date",
         close as price,
         'real' as tag
-    from finance.s3silver_finance_data
+    from {st.session_state['silver_table']}
     where partition_0 = '{ticker}'
     and cast(date_capture as date) between date_add('day',-120,current_date) and current_date
     union
@@ -90,6 +90,7 @@ def orm_asset_query():
     and ticker = '{ticker}'
     order by "date" asc
     ;"""
+    return query
 
 
 st.title("Portal de forecast v0.1")
@@ -99,7 +100,14 @@ st.session_state["aws_secret"] = st.secrets["aws_secret"]
 st.session_state["region"] = st.secrets["region"]
 st.session_state["database"] = st.secrets["database"]
 st.session_state["table"] = st.secrets["table"]
+st.session_state["silver_table"] = st.secrets["silver_table"]
 st.session_state["athena_queries_output"] = st.secrets["athena_queries_output"]
+
+tickers_query = f"""
+select distinct partition_0 as ticker
+from {st.session_state["database"]+'.'+st.session_state["silver_table"]}
+where partition_0 != 'athena_querie_results'
+"""
 
 session = boto3.Session(
     aws_access_key_id=st.session_state["aws_key"],
@@ -109,22 +117,12 @@ session = boto3.Session(
 athena = boto3.client('athena', region_name=st.session_state["region"])
 athena = session.client('athena')
 
-df = run_athena_query(
-                athena,
-                query=query,
-                database=st.session_state["database"],
-                output_location=st.session_state["athena_queries_output"]
-            )
+tickers_df = run_athena_query(athena, tickers_query, st.session_state['database'], st.session_state["athena_queries_output"] )
 
-df['date'] = pd.to_datetime(df['date'])
-
-st.title('Forecast de ativos')
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
+col_indc = 0
+for index, rows in tickers_df.iterrows():
+    query = orm_asset_query(rows['ticker'])
+    ticker_dataframe = run_athena_query(athena, query, st.session_state['database'], st.session_state['athena_queries_output'])
+    ticker_dataframe['date'] = pd.to_datetime(ticker_dataframe['date'])
+    plot_graph(ticker_dataframe, x='date', y='price',title=f'{rows['ticker']}')
     
-with col2:
-
-with col3:
-
